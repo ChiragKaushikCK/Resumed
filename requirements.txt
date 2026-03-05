@@ -2,3 +2,5 @@ streamlit
 openai
 python-docx
 xhtml2pdf
+st-gsheets-connection
+pandas
