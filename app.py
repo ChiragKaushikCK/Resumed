@@ -224,75 +224,229 @@ def generate_pdf(html_content):
     if not pdf.err:
         return result.getvalue()
     return None
-
 # ==========================================
-# 5. Streamlit UI Elements
+# 5. Streamlit UI Elements (Enhanced UI)
 # ==========================================
-st.set_page_config(page_title="AI Resume Builder", layout="wide")
+st.set_page_config(
+    page_title="Resumed - Build your resume with AI",
+    layout="wide",
+    page_icon="📄"
+)
 
-st.title("📄 AI Resume Builder")
-st.write("Build a perfectly formatted resume in seconds. Just type what you know, and the AI will professionally expand and format the rest.")
+# -------- Custom CSS (Modern UI) --------
+st.markdown("""
+<style>
 
-st.subheader("1. Choose a Template")
-template_choice = st.selectbox("Select your preferred format:", ["FAANG Template", "XYZ Format"])
+.main {
+    background: linear-gradient(135deg,#f8fafc,#eef2ff);
+}
 
-st.subheader("2. Enter Your Details")
+.block-container{
+    padding-top:2rem;
+    padding-bottom:2rem;
+}
+
+/* Hero Title */
+.hero-title{
+    font-size:48px;
+    font-weight:800;
+    background: linear-gradient(90deg,#6366f1,#3b82f6);
+    -webkit-background-clip:text;
+    -webkit-text-fill-color:transparent;
+}
+
+/* Subtitle */
+.hero-sub{
+    font-size:18px;
+    color:#555;
+}
+
+/* Card container */
+.card{
+    background:white;
+    padding:25px;
+    border-radius:16px;
+    box-shadow:0px 8px 25px rgba(0,0,0,0.06);
+    border:1px solid #eee;
+}
+
+/* Step number */
+.step{
+    font-size:20px;
+    font-weight:700;
+}
+
+/* Buttons */
+.stButton>button{
+    background:linear-gradient(90deg,#6366f1,#3b82f6);
+    color:white;
+    border:none;
+    padding:12px 25px;
+    border-radius:10px;
+    font-weight:600;
+    font-size:16px;
+    transition:0.3s;
+}
+
+.stButton>button:hover{
+    transform:scale(1.04);
+    box-shadow:0px 6px 18px rgba(0,0,0,0.2);
+}
+
+/* Download buttons */
+.stDownloadButton>button{
+    background:#111827;
+    color:white;
+    border-radius:8px;
+}
+
+/* Highlight box */
+.highlight{
+    background:#eef2ff;
+    padding:15px;
+    border-radius:10px;
+    border-left:5px solid #6366f1;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+# -------- HERO SECTION --------
+st.markdown(
+"""
+<div class="hero-title">Resumed</div>
+<div class="hero-sub">Build your resume with AI</div>
+<br>
+
+<div class="highlight">
+⚡ <b>This is the base version.</b><br>
+Next update will include <b>live interaction with AI step-by-step</b> to build your resume interactively.
+</div>
+<br>
+""",
+unsafe_allow_html=True
+)
+
+# -------- FEATURE CARDS --------
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.markdown("""
+    <div class="card">
+    🤖 <b>AI Powered</b><br><br>
+    Just describe your experience and the AI will expand it into a professional resume.
+    </div>
+    """, unsafe_allow_html=True)
+
+with col2:
+    st.markdown("""
+    <div class="card">
+    🎨 <b>Professional Templates</b><br><br>
+    Choose clean FAANG-style or stylish resume formats.
+    </div>
+    """, unsafe_allow_html=True)
+
+with col3:
+    st.markdown("""
+    <div class="card">
+    📥 <b>Export Instantly</b><br><br>
+    Download your resume as <b>PDF</b> or <b>Word</b>.
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# -------- STEP 1 TEMPLATE --------
+st.markdown('<div class="step">Step 1 — Choose Template</div>', unsafe_allow_html=True)
+
+template_choice = st.selectbox(
+    "Select your preferred resume template:",
+    ["FAANG Template", "XYZ Format"]
+)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# -------- STEP 2 INPUT --------
+st.markdown('<div class="step">Step 2 — Enter Your Experience</div>', unsafe_allow_html=True)
 
 st.info("""
-**💡 Pro Tip: Don't worry about perfect formatting or writing full sentences.**
-* Include your basic info, jobs, **projects**, and education.
-* If you just type *"Built a React app for e-commerce"*, the AI will automatically write a professional, detailed description for it!
-* The AI will also auto-generate a Professional Summary and infer your Skills if you leave them out.
+💡 **Tip**
+
+Don't worry about formatting.
+
+Just write things like:
+
+• Built a React e-commerce app  
+• Data Science Intern at ABC company  
+• Worked on fraud detection model  
+
+AI will automatically convert this into professional resume bullet points.
 """)
 
-resume_data = None
-raw_text = st.text_area("Dump your experience and projects here:", height=250)
+raw_text = st.text_area(
+    "Paste your experience, projects, education, or skills here:",
+    height=250,
+    placeholder="Example:\nData Scientist Intern at XYZ\nBuilt ML model for fraud detection\nCreated recommendation system using Python..."
+)
 
-if st.button("Generate & Enhance Resume"):
+st.markdown("<br>", unsafe_allow_html=True)
+
+generate = st.button("✨ Generate & Enhance Resume")
+
+resume_data = None
+
+if generate:
     if raw_text.strip():
-        with st.spinner("Analyzing data and generating professional descriptions..."):
+        with st.spinner("🤖 AI is analyzing and building your professional resume..."):
             resume_data = extract_details_with_ai(raw_text)
     else:
-        st.warning("Please paste some text before generating.")
+        st.warning("Please paste some information before generating your resume.")
 
 # ==========================================
 # 6. Output Render & Downloads
 # ==========================================
+
 if resume_data:
-    st.success("Resume generated successfully!")
+
     st.markdown("---")
-    
-    # Generate the HTML layout for preview
+    st.success("✅ Resume generated successfully!")
+
     if template_choice == "FAANG Template":
         final_html = render_faang_template(resume_data)
     else:
         final_html = render_xyz_template(resume_data)
-        
-    st.subheader("Preview")
+
+    st.markdown("### 🔍 Resume Preview")
+
     st.components.v1.html(final_html, height=800, scrolling=True)
-    
+
     st.markdown("---")
-    st.subheader("Export Your Resume")
-    
+
+    st.markdown("### 📥 Export Resume")
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
         docx_file = generate_docx(resume_data)
+
         st.download_button(
-            label="📄 Download as Word (.docx)",
+            label="📄 Download Word (.docx)",
             data=docx_file,
-            file_name=f"{resume_data.get('name', 'Resume').replace(' ', '_')}.docx",
+            file_name=f"{resume_data.get('name','Resume').replace(' ','_')}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
-        
+
     with col2:
         pdf_file = generate_pdf(final_html)
+
         if pdf_file:
             st.download_button(
-                label="📥 Download as PDF (.pdf)",
+                label="📥 Download PDF",
                 data=pdf_file,
-                file_name=f"{resume_data.get('name', 'Resume').replace(' ', '_')}.pdf",
+                file_name=f"{resume_data.get('name','Resume').replace(' ','_')}.pdf",
                 mime="application/pdf"
             )
         else:
-            st.error("Failed to generate PDF.")
+            st.error("PDF generation failed.")
+
+
