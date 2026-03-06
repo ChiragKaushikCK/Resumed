@@ -296,8 +296,7 @@ def save_name_to_sheets(name):
         updated_df = pd.concat([df, new_row], ignore_index=True)
         conn.update(data=updated_df)
     except Exception as e:
-        # We are printing the error now instead of hiding it!
-        st.error(f"🚨 Google Sheets Error: {e}")
+        pass 
 
 # ==========================================
 # 6. Streamlit UI Elements
