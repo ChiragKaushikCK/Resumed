@@ -4,3 +4,4 @@ python-docx
 xhtml2pdf
 st-gsheets-connection
 pandas
+reportlab
