@@ -2,20 +2,14 @@ import streamlit as st
 import os
 import json
 import io
-import re
 import pandas as pd
 from openai import OpenAI
 from docx import Document
-from docx.shared import Pt, RGBColor, Inches, Cm
+from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import mm, cm
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+from xhtml2pdf import pisa
+from streamlit_gsheets import GSheetsConnection
+import re
 
 # ==========================================
 # 1. API Configuration (OpenRouter)
@@ -35,123 +29,428 @@ client = OpenAI(
 )
 
 # ==========================================
-# 2. HTML/CSS Resume Templates (Preview Only)
+# 2. Enhanced HTML/CSS Resume Templates
 # ==========================================
-def render_template(data, style="faang"):
-    accent = "#1a1a1a" if style == "faang" else "#1d5fa8"
-    font = "'Helvetica Neue', Helvetica, Arial, sans-serif" if style == "faang" else "'Georgia', serif"
-
-    def section_header(title):
-        return f"""<h3 style="border-bottom: 2px solid {accent}; padding-bottom: 3px; margin-top: 20px;
-                   text-transform: uppercase; font-size: 13px; color: {accent}; letter-spacing: 1px;">{title}</h3>"""
-
-    html = f"""
-    <div style="font-family: {font}; max-width: 780px; margin: 0 auto; padding: 36px;
-                color: #1a1a1a; background: white; box-shadow: 0 2px 16px rgba(0,0,0,0.10);">
-        <div style="text-align: center; padding-bottom: 12px; margin-bottom: 4px; border-bottom: 2px solid {accent};">
-            <h1 style="margin: 0; font-size: 30px; letter-spacing: 0.5px;">{data.get('name', 'Your Name')}</h1>
-            <p style="margin: 6px 0 0 0; font-size: 12px; color: #444;">{data.get('contact', '')}</p>
-        </div>
+def get_base_styles():
+    return """
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+        }
+        .resume-container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px;
+            background: white;
+        }
+        .section {
+            margin-bottom: 20px;
+        }
+        .section-title {
+            font-size: 16px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 2px solid #000;
+            padding-bottom: 5px;
+            margin-bottom: 15px;
+            color: #000;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        .name {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+        .contact {
+            font-size: 12px;
+            color: #666;
+        }
+        .experience-item, .project-item, .education-item {
+            margin-bottom: 15px;
+        }
+        .item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 5px;
+        }
+        .item-title {
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .item-subtitle {
+            font-weight: 500;
+            color: #444;
+        }
+        .item-date {
+            font-size: 12px;
+            color: #666;
+            font-style: italic;
+        }
+        .item-description {
+            font-size: 13px;
+            color: #444;
+            margin-left: 0;
+            line-height: 1.5;
+        }
+        .skills-list {
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .bullet-point {
+            margin-bottom: 3px;
+            list-style-type: disc;
+            margin-left: 20px;
+        }
+        @media print {
+            .resume-container {
+                padding: 20px;
+            }
+        }
+    </style>
     """
 
-    if data.get('summary'):
-        html += section_header("Professional Summary")
-        html += f'<p style="font-size: 12.5px; line-height: 1.6; margin-top: 6px;">{data["summary"]}</p>'
+def render_faang_template(data):
+    # Filter out empty sections
+    has_experience = data.get('experience') and len([e for e in data['experience'] if e.get('title') or e.get('company')]) > 0
+    has_projects = data.get('projects') and len([p for p in data['projects'] if p.get('name')]) > 0
+    has_education = data.get('education') and len([e for e in data['education'] if e.get('university') or e.get('degree')]) > 0
+    has_skills = data.get('skills') and data['skills'].strip()
+    has_summary = data.get('summary') and data['summary'].strip()
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        {get_base_styles()}
+    </head>
+    <body>
+        <div class="resume-container">
+            <!-- Header -->
+            <div class="header">
+                <div class="name">{data.get('name', 'Your Name')}</div>
+                <div class="contact">{data.get('contact', '')}</div>
+            </div>
+    """
+    
+    # Summary (only if exists)
+    if has_summary:
+        html += f"""
+            <div class="section">
+                <div class="section-title">Professional Summary</div>
+                <p class="item-description">{data.get('summary', '')}</p>
+            </div>
+        """
+    
+    # Experience (only if exists)
+    if has_experience:
+        html += f"""
+            <div class="section">
+                <div class="section-title">Professional Experience</div>
+        """
+        for exp in data.get('experience', []):
+            if exp.get('title') or exp.get('company'):  # Only show if there's content
+                html += f"""
+                    <div class="experience-item">
+                        <div class="item-header">
+                            <div>
+                                <span class="item-title">{exp.get('title', '')}</span>
+                                {f'<span class="item-subtitle"> at {exp.get("company", "")}</span>' if exp.get('company') else ''}
+                            </div>
+                            <div class="item-date">{exp.get('duration', '')}</div>
+                        </div>
+                """
+                if exp.get('description'):
+                    # Split description into bullet points if it contains multiple sentences
+                    desc = exp.get('description', '')
+                    if '. ' in desc:
+                        points = desc.split('. ')
+                        for point in points:
+                            if point.strip():
+                                html += f'<div class="bullet-point">{point.strip()}{"." if not point.endswith(".") else ""}</div>'
+                    else:
+                        html += f'<div class="item-description">{desc}</div>'
+                html += "</div>"
+        html += "</div>"
+    
+    # Projects (only if exists)
+    if has_projects:
+        html += f"""
+            <div class="section">
+                <div class="section-title">Projects</div>
+        """
+        for proj in data.get('projects', []):
+            if proj.get('name'):
+                html += f"""
+                    <div class="project-item">
+                        <div class="item-header">
+                            <span class="item-title">{proj.get('name', '')}</span>
+                            {f'<span class="item-date">{proj.get("tech_stack", "")}</span>' if proj.get('tech_stack') else ''}
+                        </div>
+                """
+                if proj.get('description'):
+                    html += f'<div class="item-description">{proj.get("description", "")}</div>'
+                html += "</div>"
+        html += "</div>"
+    
+    # Education (only if exists)
+    if has_education:
+        html += f"""
+            <div class="section">
+                <div class="section-title">Education</div>
+        """
+        for edu in data.get('education', []):
+            if edu.get('university') or edu.get('degree'):
+                html += f"""
+                    <div class="education-item">
+                        <div class="item-header">
+                            <div>
+                                <span class="item-title">{edu.get('university', '')}</span>
+                                {f'<span class="item-subtitle"> - {edu.get("degree", "")}</span>' if edu.get('degree') else ''}
+                            </div>
+                            <div class="item-date">{edu.get('year', '')}</div>
+                        </div>
+                    </div>
+                """
+        html += "</div>"
+    
+    # Skills (only if exists)
+    if has_skills:
+        html += f"""
+            <div class="section">
+                <div class="section-title">Skills</div>
+                <div class="skills-list">{data.get('skills', '')}</div>
+            </div>
+        """
+    
+    html += """
+        </div>
+    </body>
+    </html>
+    """
+    return html
 
-    exp_list = [e for e in data.get('experience', []) if e.get('title') or e.get('company') or e.get('description')]
-    if exp_list:
-        html += section_header("Experience")
-        for exp in exp_list:
-            desc_html = exp.get('description', '').replace('\n', '<br>')
-            # Convert bullet lines to HTML bullets
-            desc_html = re.sub(r'(?m)^[•\-\*]\s?', '• ', desc_html)
-            html += f"""
-            <div style="margin-top: 10px;">
-                <div style="display: flex; justify-content: space-between; align-items: baseline;">
-                    <span><b style="font-size: 13px;">{exp.get('title', '')} — {exp.get('company', '')}</b></span>
-                    <span style="font-size: 11.5px; color: #666; white-space: nowrap; margin-left: 12px;">{exp.get('duration', '')}</span>
-                </div>
-                <p style="font-size: 12px; margin: 4px 0; line-height: 1.6; color: #333;">{desc_html}</p>
-            </div>"""
-
-    proj_list = [p for p in data.get('projects', []) if p.get('name') or p.get('description')]
-    if proj_list:
-        html += section_header("Projects")
-        for proj in proj_list:
-            html += f"""
-            <div style="margin-top: 10px;">
-                <div style="display: flex; justify-content: space-between; align-items: baseline;">
-                    <b style="font-size: 13px;">{proj.get('name', '')}</b>
-                    <span style="font-size: 11.5px; color: #666; font-style: italic; margin-left: 12px;">{proj.get('tech_stack', '')}</span>
-                </div>
-                <p style="font-size: 12px; margin: 4px 0; line-height: 1.6; color: #333;">{proj.get('description', '')}</p>
-            </div>"""
-
-    edu_list = [e for e in data.get('education', []) if e.get('degree') or e.get('university')]
-    if edu_list:
-        html += section_header("Education")
-        for edu in edu_list:
-            html += f"""
-            <div style="display: flex; justify-content: space-between; margin-top: 8px; align-items: baseline;">
-                <div>
-                    <b style="font-size: 13px;">{edu.get('university', '')}</b>
-                    <p style="margin: 1px 0; font-size: 12px; color: #444;">{edu.get('degree', '')}</p>
-                </div>
-                <span style="font-size: 11.5px; color: #666; white-space: nowrap; margin-left: 12px;">{edu.get('year', '')}</span>
-            </div>"""
-
-    if data.get('skills', '').strip():
-        html += section_header("Skills")
-        html += f'<p style="font-size: 12.5px; line-height: 1.6; margin-top: 6px;">{data["skills"]}</p>'
-
-    html += "</div>"
+def render_xyz_template(data):
+    # Custom styles for XYZ template
+    xyz_styles = """
+    <style>
+        .section-title {
+            color: #2a75d3;
+            border-bottom-color: #2a75d3;
+        }
+        .name {
+            color: #2a75d3;
+        }
+        .item-title {
+            color: #1a4b8c;
+        }
+        body {
+            font-family: 'Georgia', serif;
+        }
+    </style>
+    """
+    
+    html = render_faang_template(data)
+    # Inject custom styles
+    html = html.replace('</head>', f'{xyz_styles}</head>')
     return html
 
 # ==========================================
-# 3. AI Processing
+# 3. Enhanced DOCX Generator
+# ==========================================
+def generate_docx(data):
+    doc = Document()
+    
+    # Set document margins
+    sections = doc.sections
+    for section in sections:
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin = Inches(1)
+        section.right_margin = Inches(1)
+    
+    # Name (centered)
+    name = doc.add_heading(data.get('name', 'Your Name'), 0)
+    name.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Contact
+    if data.get('contact'):
+        contact = doc.add_paragraph(data.get('contact'))
+        contact.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Helper function to add section only if content exists
+    def add_section(title, content_func):
+        if content_func():
+            doc.add_heading(title, level=1)
+            content_func()
+    
+    # Summary
+    if data.get('summary', '').strip():
+        doc.add_heading('Professional Summary', level=1)
+        doc.add_paragraph(data.get('summary'))
+    
+    # Experience
+    if data.get('experience') and any(e.get('title') or e.get('company') for e in data['experience']):
+        doc.add_heading('Professional Experience', level=1)
+        for exp in data['experience']:
+            if exp.get('title') or exp.get('company'):
+                p = doc.add_paragraph()
+                p.add_run(exp.get('title', '')).bold = True
+                if exp.get('company'):
+                    p.add_run(f" at {exp.get('company')}")
+                if exp.get('duration'):
+                    p.add_run(f" | {exp.get('duration')}").italic = True
+                
+                if exp.get('description'):
+                    # Add description with proper formatting
+                    desc = exp.get('description')
+                    if '. ' in desc:
+                        points = desc.split('. ')
+                        for point in points:
+                            if point.strip():
+                                bullet_para = doc.add_paragraph(style='List Bullet')
+                                bullet_para.add_run(point.strip() + '.')
+                    else:
+                        doc.add_paragraph(desc)
+    
+    # Projects
+    if data.get('projects') and any(p.get('name') for p in data['projects']):
+        doc.add_heading('Projects', level=1)
+        for proj in data['projects']:
+            if proj.get('name'):
+                p = doc.add_paragraph()
+                p.add_run(proj.get('name', '')).bold = True
+                if proj.get('tech_stack'):
+                    p.add_run(f" | {proj.get('tech_stack')}").italic = True
+                
+                if proj.get('description'):
+                    doc.add_paragraph(proj.get('description'), style='List Bullet' if len(proj.get('description')) < 100 else 'Normal')
+    
+    # Education
+    if data.get('education') and any(e.get('university') or e.get('degree') for e in data['education']):
+        doc.add_heading('Education', level=1)
+        for edu in data['education']:
+            if edu.get('university') or edu.get('degree'):
+                p = doc.add_paragraph()
+                title_run = p.add_run(edu.get('university', ''))
+                title_run.bold = True
+                if edu.get('degree'):
+                    p.add_run(f" - {edu.get('degree')}")
+                if edu.get('year'):
+                    p.add_run(f" ({edu.get('year')})").italic = True
+    
+    # Skills
+    if data.get('skills', '').strip():
+        doc.add_heading('Skills', level=1)
+        skills_para = doc.add_paragraph()
+        skills_para.add_run(data.get('skills'))
+    
+    # Save to bytes
+    bio = io.BytesIO()
+    doc.save(bio)
+    return bio.getvalue()
+
+# ==========================================
+# 4. Enhanced PDF Generator
+# ==========================================
+def generate_pdf(html_content):
+    # Add print-specific styles
+    print_styles = """
+    <style>
+        @page {
+            size: A4;
+            margin: 2.5cm;
+        }
+        body {
+            background: white;
+            font-size: 12pt;
+        }
+        .resume-container {
+            max-width: 100%;
+            padding: 0;
+        }
+        .section-title {
+            font-size: 14pt;
+        }
+        .name {
+            font-size: 24pt;
+        }
+    </style>
+    """
+    
+    # Insert print styles before closing head
+    full_html = html_content.replace('</head>', f'{print_styles}</head>')
+    
+    result = io.BytesIO()
+    pdf = pisa.pisaDocument(
+        io.BytesIO(full_html.encode("UTF-8")), 
+        result,
+        encoding='UTF-8'
+    )
+    
+    if not pdf.err:
+        return result.getvalue()
+    return None
+
+# ==========================================
+# 5. Enhanced AI Processing
 # ==========================================
 def extract_details_with_ai(raw_text):
     prompt = """
-You are an expert resume writer. Extract information from the user's raw text and return ONLY a valid JSON object (no markdown, no code fences).
+    You are an expert resume writer and career coach. Extract and ENHANCE the information from the user's raw text.
 
-RULES:
-1. Only include sections the user actually mentioned. If no experience is provided, set "experience" to an empty array [].
-2. If experience is mentioned but sparse, expand into professional bullet points.
-3. Only include "projects" if the user mentioned projects. Otherwise set to [].
-4. Write a compelling summary if one isn't provided.
-5. Infer skills from context if not explicitly listed.
-6. Descriptions should use bullet-point style (start lines with •).
+    CRITICAL INSTRUCTIONS:
+    1. ONLY include sections where the user has provided relevant information
+    2. If a section has NO data, OMIT it completely from the JSON
+    3. For incomplete information, generate professional, realistic content based on standard industry practices
+    4. Write compelling bullet points (3-5) for each role/project that highlight achievements and impact
+    5. Use action verbs and quantify results where possible
+    6. Format skills as a clean, comma-separated list grouped by category
+    7. Ensure all text is grammatically perfect and professional
 
-JSON Schema (return exactly this structure):
-{
-  "name": "Full Name",
-  "contact": "Email | Phone | Location | LinkedIn",
-  "summary": "2-3 sentence professional summary.",
-  "experience": [
+    Output format: Return ONLY valid JSON with this structure (omit empty sections):
     {
-      "title": "Job Title",
-      "company": "Company",
-      "duration": "Month Year – Month Year",
-      "description": "• Achievement 1\n• Achievement 2\n• Achievement 3"
+        "name": "Full Name",
+        "contact": "Email | Phone | Location | LinkedIn/GitHub (if provided)",
+        "summary": "2-3 sentence professional summary (only if enough info exists)",
+        "experience": [
+            {
+                "title": "Job Title",
+                "company": "Company Name",
+                "duration": "Start Date - End Date",
+                "description": "Multiple bullet points separated by periods. Each bullet should be an achievement-oriented statement."
+            }
+        ],
+        "projects": [
+            {
+                "name": "Project Name",
+                "tech_stack": "Technologies used",
+                "description": "Detailed project description with problem solved and impact"
+            }
+        ],
+        "education": [
+            {
+                "degree": "Degree Name",
+                "university": "University Name",
+                "year": "Graduation Year"
+            }
+        ],
+        "skills": "Technical Skills: Python, Java | Soft Skills: Leadership, Communication"
     }
-  ],
-  "projects": [
-    {
-      "name": "Project Name",
-      "tech_stack": "Tech 1, Tech 2",
-      "description": "What it does and its impact."
-    }
-  ],
-  "education": [
-    {
-      "degree": "Degree, Major",
-      "university": "University Name",
-      "year": "Graduation Year"
-    }
-  ],
-  "skills": "Skill 1, Skill 2, Skill 3, ..."
-}
-"""
+    """
+    
     try:
         response = client.chat.completions.create(
             model="openai/gpt-4o-mini",
@@ -159,368 +458,258 @@ JSON Schema (return exactly this structure):
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": raw_text}
             ],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            temperature=0.7
         )
-        return json.loads(response.choices[0].message.content)
+        
+        result = json.loads(response.choices[0].message.content)
+        
+        # Clean up the result: remove empty sections
+        cleaned_result = {}
+        for key, value in result.items():
+            if key in ['experience', 'projects', 'education']:
+                # For list fields, only keep if there are items with content
+                if value and isinstance(value, list):
+                    non_empty_items = []
+                    for item in value:
+                        if any(str(v).strip() for v in item.values() if v):
+                            non_empty_items.append(item)
+                    if non_empty_items:
+                        cleaned_result[key] = non_empty_items
+            else:
+                # For string fields, only keep if there's content
+                if value and str(value).strip():
+                    cleaned_result[key] = value
+        
+        return cleaned_result
+        
     except Exception as e:
         st.error(f"Error communicating with OpenRouter API: {e}")
         return None
 
 # ==========================================
-# 4. High-Quality PDF via ReportLab
+# 6. Database Logging (Google Sheets)
 # ==========================================
-def generate_pdf_reportlab(data, style="faang"):
-    accent_color = colors.HexColor("#1a1a1a") if style == "faang" else colors.HexColor("#1d5fa8")
-    font_name = "Helvetica" if style == "faang" else "Times-Roman"
-    font_bold = "Helvetica-Bold" if style == "faang" else "Times-Bold"
-    font_italic = "Helvetica-Oblique" if style == "faang" else "Times-Italic"
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=18*mm, rightMargin=18*mm,
-        topMargin=16*mm, bottomMargin=16*mm
-    )
-
-    styles = {
-        "name": ParagraphStyle("name", fontName=font_bold, fontSize=22, alignment=TA_CENTER,
-                               textColor=colors.HexColor("#1a1a1a"), spaceAfter=3),
-        "contact": ParagraphStyle("contact", fontName=font_name, fontSize=9.5, alignment=TA_CENTER,
-                                  textColor=colors.HexColor("#555555"), spaceAfter=8),
-        "section": ParagraphStyle("section", fontName=font_bold, fontSize=10, textColor=accent_color,
-                                  spaceBefore=12, spaceAfter=2, letterSpacing=1.5),
-        "body": ParagraphStyle("body", fontName=font_name, fontSize=10, leading=15,
-                               textColor=colors.HexColor("#222222"), spaceAfter=2),
-        "job_title": ParagraphStyle("job_title", fontName=font_bold, fontSize=10.5,
-                                    textColor=colors.HexColor("#1a1a1a"), spaceAfter=1),
-        "bullet": ParagraphStyle("bullet", fontName=font_name, fontSize=10, leading=14,
-                                 textColor=colors.HexColor("#333333"), leftIndent=12, spaceAfter=1),
-        "italic": ParagraphStyle("italic", fontName=font_italic, fontSize=9.5,
-                                 textColor=colors.HexColor("#666666"), spaceAfter=4),
-    }
-
-    def hr():
-        return HRFlowable(width="100%", thickness=1, color=accent_color, spaceAfter=4, spaceBefore=2)
-
-    def section_title(title):
-        return [Paragraph(title.upper(), styles["section"]), hr()]
-
-    story = []
-
-    # Header
-    story.append(Paragraph(data.get("name", "Your Name"), styles["name"]))
-    story.append(Paragraph(data.get("contact", ""), styles["contact"]))
-    story.append(HRFlowable(width="100%", thickness=2, color=accent_color, spaceAfter=6))
-
-    # Summary
-    if data.get("summary", "").strip():
-        story += section_title("Professional Summary")
-        story.append(Paragraph(data["summary"], styles["body"]))
-
-    # Experience
-    exp_list = [e for e in data.get("experience", []) if e.get("title") or e.get("company") or e.get("description")]
-    if exp_list:
-        story += section_title("Experience")
-        for exp in exp_list:
-            # Title + duration on same row
-            title_str = f"{exp.get('title', '')} — <b>{exp.get('company', '')}</b>"
-            dur_str = exp.get("duration", "")
-            row = Table(
-                [[Paragraph(title_str, styles["job_title"]), Paragraph(dur_str, styles["italic"])]],
-                colWidths=[None, 45*mm]
-            )
-            row.setStyle(TableStyle([
-                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ]))
-            story.append(row)
-            for line in exp.get("description", "").split("\n"):
-                line = line.strip()
-                if line:
-                    clean = re.sub(r'^[•\-\*]\s?', '', line)
-                    story.append(Paragraph(f"• {clean}", styles["bullet"]))
-            story.append(Spacer(1, 4))
-
-    # Projects
-    proj_list = [p for p in data.get("projects", []) if p.get("name") or p.get("description")]
-    if proj_list:
-        story += section_title("Projects")
-        for proj in proj_list:
-            name_str = f"<b>{proj.get('name', '')}</b>"
-            tech_str = proj.get("tech_stack", "")
-            row = Table(
-                [[Paragraph(name_str, styles["job_title"]), Paragraph(tech_str, styles["italic"])]],
-                colWidths=[None, 60*mm]
-            )
-            row.setStyle(TableStyle([
-                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ]))
-            story.append(row)
-            story.append(Paragraph(proj.get("description", ""), styles["body"]))
-            story.append(Spacer(1, 4))
-
-    # Education
-    edu_list = [e for e in data.get("education", []) if e.get("degree") or e.get("university")]
-    if edu_list:
-        story += section_title("Education")
-        for edu in edu_list:
-            uni_str = f"<b>{edu.get('university', '')}</b>"
-            year_str = edu.get("year", "")
-            row = Table(
-                [[Paragraph(uni_str, styles["job_title"]), Paragraph(year_str, styles["italic"])]],
-                colWidths=[None, 35*mm]
-            )
-            row.setStyle(TableStyle([
-                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ]))
-            story.append(row)
-            story.append(Paragraph(edu.get("degree", ""), styles["body"]))
-            story.append(Spacer(1, 4))
-
-    # Skills
-    if data.get("skills", "").strip():
-        story += section_title("Skills")
-        story.append(Paragraph(data["skills"], styles["body"]))
-
-    doc.build(story)
-    return buf.getvalue()
+def save_name_to_sheets(name):
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df = conn.read(usecols=[0], ttl=0)
+        new_row = pd.DataFrame({"Name": [name]})
+        updated_df = pd.concat([df, new_row], ignore_index=True)
+        conn.update(data=updated_df)
+    except Exception:
+        pass  # Fail silently
 
 # ==========================================
-# 5. High-Quality DOCX Generator
+# 7. Streamlit UI
 # ==========================================
-def add_horizontal_rule(doc, color_hex="1a1a1a", thickness=4):
-    """Adds a styled bottom border to the last paragraph as a divider."""
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(0)
-    p.paragraph_format.space_after = Pt(2)
-    pPr = p._p.get_or_add_pPr()
-    pBdr = OxmlElement("w:pBdr")
-    bottom = OxmlElement("w:bottom")
-    bottom.set(qn("w:val"), "single")
-    bottom.set(qn("w:sz"), str(thickness))
-    bottom.set(qn("w:space"), "1")
-    bottom.set(qn("w:color"), color_hex)
-    pBdr.append(bottom)
-    pPr.append(pBdr)
-    return p
+st.set_page_config(
+    page_title="Resumed Pro | AI Resume Builder", 
+    layout="wide", 
+    page_icon="📄",
+    initial_sidebar_state="expanded"
+)
 
-def set_font(run, name, size, bold=False, italic=False, color_hex=None):
-    run.font.name = name
-    run.font.size = Pt(size)
-    run.font.bold = bold
-    run.font.italic = italic
-    if color_hex:
-        r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
-        run.font.color.rgb = RGBColor(r, g, b)
-
-def generate_docx(data, style="faang"):
-    accent_hex = "1a1a1a" if style == "faang" else "1d5fa8"
-    main_font = "Calibri"
-
-    doc = Document()
-
-    # Page margins
-    for section in doc.sections:
-        section.top_margin = Cm(1.5)
-        section.bottom_margin = Cm(1.5)
-        section.left_margin = Cm(2.0)
-        section.right_margin = Cm(2.0)
-
-    # Name
-    name_para = doc.add_paragraph()
-    name_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    name_run = name_para.add_run(data.get("name", "Your Name"))
-    set_font(name_run, main_font, 24, bold=True, color_hex="1a1a1a")
-    name_para.paragraph_format.space_after = Pt(2)
-
-    # Contact
-    contact_para = doc.add_paragraph()
-    contact_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    cr = contact_para.add_run(data.get("contact", ""))
-    set_font(cr, main_font, 9.5, color_hex="555555")
-    contact_para.paragraph_format.space_after = Pt(6)
-    add_horizontal_rule(doc, accent_hex, thickness=12)
-
-    def section_heading(title):
-        p = doc.add_paragraph()
-        r = p.add_run(title.upper())
-        set_font(r, main_font, 10, bold=True, color_hex=accent_hex)
-        p.paragraph_format.space_before = Pt(10)
-        p.paragraph_format.space_after = Pt(0)
-        add_horizontal_rule(doc, accent_hex, thickness=4)
-
-    def body_para(text, indent=False):
-        p = doc.add_paragraph()
-        r = p.add_run(text)
-        set_font(r, main_font, 10, color_hex="222222")
-        p.paragraph_format.space_after = Pt(1)
-        if indent:
-            p.paragraph_format.left_indent = Cm(0.4)
-        return p
-
-    # Summary
-    if data.get("summary", "").strip():
-        section_heading("Professional Summary")
-        body_para(data["summary"])
-
-    # Experience
-    exp_list = [e for e in data.get("experience", []) if e.get("title") or e.get("company") or e.get("description")]
-    if exp_list:
-        section_heading("Experience")
-        for exp in exp_list:
-            p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(6)
-            p.paragraph_format.space_after = Pt(0)
-            r1 = p.add_run(f"{exp.get('title', '')} — {exp.get('company', '')}")
-            set_font(r1, main_font, 11, bold=True, color_hex="1a1a1a")
-            r2 = p.add_run(f"   {exp.get('duration', '')}")
-            set_font(r2, main_font, 9.5, italic=True, color_hex="666666")
-            for line in exp.get("description", "").split("\n"):
-                line = line.strip()
-                if line:
-                    clean = re.sub(r'^[•\-\*]\s?', '', line)
-                    bp = doc.add_paragraph(style="List Bullet")
-                    r = bp.add_run(clean)
-                    set_font(r, main_font, 10, color_hex="333333")
-                    bp.paragraph_format.left_indent = Cm(0.5)
-                    bp.paragraph_format.space_after = Pt(1)
-
-    # Projects
-    proj_list = [p for p in data.get("projects", []) if p.get("name") or p.get("description")]
-    if proj_list:
-        section_heading("Projects")
-        for proj in proj_list:
-            p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(6)
-            r1 = p.add_run(proj.get("name", ""))
-            set_font(r1, main_font, 11, bold=True)
-            if proj.get("tech_stack"):
-                r2 = p.add_run(f"   {proj['tech_stack']}")
-                set_font(r2, main_font, 9.5, italic=True, color_hex="666666")
-            body_para(proj.get("description", ""), indent=True)
-
-    # Education
-    edu_list = [e for e in data.get("education", []) if e.get("degree") or e.get("university")]
-    if edu_list:
-        section_heading("Education")
-        for edu in edu_list:
-            p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(6)
-            r1 = p.add_run(edu.get("university", ""))
-            set_font(r1, main_font, 11, bold=True)
-            r2 = p.add_run(f"   {edu.get('year', '')}")
-            set_font(r2, main_font, 9.5, italic=True, color_hex="666666")
-            deg_para = doc.add_paragraph()
-            dr = deg_para.add_run(edu.get("degree", ""))
-            set_font(dr, main_font, 10, color_hex="333333")
-            deg_para.paragraph_format.space_after = Pt(1)
-
-    # Skills
-    if data.get("skills", "").strip():
-        section_heading("Skills")
-        body_para(data["skills"])
-
-    bio = io.BytesIO()
-    doc.save(bio)
-    return bio.getvalue()
-
-# ==========================================
-# 6. Streamlit UI
-# ==========================================
-st.set_page_config(page_title="Resumed | AI Builder", layout="wide", page_icon="📄")
-
+# Custom CSS for better UI
 st.markdown("""
 <style>
-    .block-container { padding-top: 2rem; }
-    .stTabs [data-baseweb="tab"] { font-size: 15px; font-weight: 600; }
-    div[data-testid="stDownloadButton"] button {
-        border-radius: 8px; font-weight: 600;
+    .stButton > button {
+        width: 100%;
+        background-color: #2a75d3;
+        color: white;
+        font-weight: 600;
+    }
+    .stButton > button:hover {
+        background-color: #1a4b8c;
+    }
+    .success-message {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        background-color: #d4edda;
+        color: #155724;
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📄 Resumed — AI Resume Builder")
-st.caption("Paste your raw background. AI writes it professionally. Download as Word or PDF.")
+# Main Header
+st.title("📄 Resumed Pro - AI-Powered Resume Builder")
+st.markdown("Transform your raw experience into a professional, ATS-friendly resume in minutes.")
 
+# Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
-    template_choice = st.selectbox("Template Style", ["FAANG / Modern", "Classic / Serif"])
+    template_choice = st.selectbox(
+        "Resume Template:",
+        ["FAANG Template (Modern)", "XYZ Format (Professional)"],
+        help="Choose the visual style for your resume"
+    )
+    
     st.markdown("---")
     st.markdown("### How it works")
-    st.markdown("1. Paste your raw background info\n2. AI formats & enhances it\n3. Download as Word or PDF")
+    st.markdown("""
+    1. **Paste** your raw experience in the text box
+    2. **AI Enhancement** - Our AI writes professional bullet points and fills gaps
+    3. **Preview** - See your formatted resume instantly
+    4. **Export** - Download as Word or PDF with perfect formatting
+    """)
+    
     st.markdown("---")
-    st.markdown("**Tips for best results:**")
-    st.markdown("- Include name, contact info\n- List any jobs/internships\n- Mention projects if any\n- Include your education")
+    st.markdown("### Pro Tips")
+    st.info("""
+    • Include specific achievements and metrics
+    • Mention technologies you've used
+    • List both work experience and projects
+    """)
 
-style_key = "faang" if template_choice == "FAANG / Modern" else "xyz"
-
+# Initialize session state
 if "resume_data" not in st.session_state:
     st.session_state.resume_data = None
 
-tab1, tab2 = st.tabs(["📝 1. Enter Details", "👁️ 2. Preview & Download"])
+# Create tabs
+tab1, tab2 = st.tabs(["📝 Enter Details", "👁️ Preview & Export"])
 
 with tab1:
-    st.markdown("### Paste Your Raw Background")
-    st.caption("Don't worry about formatting. AI handles everything—grammar, bullet points, professional tone. Just dump the facts.")
-    raw_text = st.text_area(
-        "Your raw info:",
-        height=260,
-        placeholder="E.g.:\nMy name is Priya Sharma. Email: priya@gmail.com, Phone: +91-9876543210\n\nI studied Computer Science at IIT Delhi, graduated 2023.\n\nI interned at TCS for 6 months as a backend developer — worked on REST APIs using Node.js and MongoDB.\n\nI built a project called SmartNotes: a React + Firebase note-taking app with real-time sync.\n\nSkills: Python, JS, React, Node.js, SQL."
-    )
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.markdown("### 📋 Your Professional Background")
+        st.caption("Paste your work experience, projects, education, and skills. Don't worry about formatting - we'll handle that!")
+        
+        raw_text = st.text_area(
+            "Raw Experience Text:",
+            height=300,
+            placeholder="Example:\n\nWorked as a software engineer at Google for 3 years. Built scalable microservices using Python and Kubernetes. Improved API response time by 40%.\n\nCreated a machine learning project for sentiment analysis using BERT and PyTorch.\n\nBS in Computer Science from Stanford University, 2020.\n\nSkills: Python, Java, AWS, React, Machine Learning",
+            help="The more details you provide, the better your resume will be!"
+        )
+        
+        if st.button("✨ Generate Professional Resume", use_container_width=True):
+            if raw_text.strip():
+                with st.spinner("Analyzing your experience and crafting professional content..."):
+                    result = extract_details_with_ai(raw_text)
+                    if result:
+                        st.session_state.resume_data = result
+                        
+                        if result.get("name"):
+                            save_name_to_sheets(result["name"])
+                        
+                        st.success("✅ Your professional resume has been generated! Go to the Preview tab to see it.")
+                        st.balloons()
+            else:
+                st.warning("Please paste your experience details first.")
+    
+    with col2:
+        st.markdown("### 📊 What We'll Enhance")
+        st.markdown("""
+        ✓ **Professional Summaries** - Compelling overviews of your profile
+        
+        ✓ **Achievement Bullets** - Action-oriented descriptions with metrics
+        
+        ✓ **Skill Extraction** - Categorized technical and soft skills
+        
+        ✓ **Project Descriptions** - Impact-focused project highlights
+        
+        ✓ **Education Formatting** - Clean, consistent education section
+        """)
+        
+        st.markdown("### 🔍 Example Input")
+        with st.expander("See example"):
+            st.code("""
+Software developer at Microsoft (2021-2023). 
+Worked on Azure cloud services. 
+Built a dashboard for monitoring. 
+Improved system reliability.
 
-    if st.button("✨ Generate Resume", use_container_width=True, type="primary"):
-        if raw_text.strip():
-            with st.spinner("AI is crafting your professional resume..."):
-                result = extract_details_with_ai(raw_text)
-                if result:
-                    st.session_state.resume_data = result
-                    st.success("✅ Resume generated! Switch to the **Preview & Download** tab.")
-        else:
-            st.warning("Please paste some text first.")
+Created a React Native app for fitness tracking.
+Used Firebase for backend.
+
+MS in Computer Science from MIT, 2021.
+Skills: JavaScript, Python, Azure, React
+            """)
 
 with tab2:
     if st.session_state.resume_data:
         data = st.session_state.resume_data
-        final_html = render_template(data, style=style_key)
-
-        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        # Export buttons
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 3])
+        
+        # Determine template
+        template_map = {
+            "FAANG Template (Modern)": render_faang_template,
+            "XYZ Format (Professional)": render_xyz_template
+        }
+        render_func = template_map.get(template_choice, render_faang_template)
+        final_html = render_func(data)
+        
         with col1:
-            docx_bytes = generate_docx(data, style=style_key)
+            docx_file = generate_docx(data)
             st.download_button(
-                "📄 Download Word (.docx)",
-                data=docx_bytes,
+                label="📄 Word",
+                data=docx_file,
                 file_name=f"{data.get('name', 'Resume').replace(' ', '_')}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True
             )
+        
         with col2:
-            pdf_bytes = generate_pdf_reportlab(data, style=style_key)
+            pdf_file = generate_pdf(final_html)
+            if pdf_file:
+                st.download_button(
+                    label="📥 PDF",
+                    data=pdf_file,
+                    file_name=f"{data.get('name', 'Resume').replace(' ', '_')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            else:
+                st.error("PDF generation failed")
+        
+        with col3:
+            # JSON export for backup
+            json_str = json.dumps(data, indent=2)
             st.download_button(
-                "📥 Download PDF",
-                data=pdf_bytes,
-                file_name=f"{data.get('name', 'Resume').replace(' ', '_')}.pdf",
-                mime="application/pdf",
+                label="📋 JSON",
+                data=json_str,
+                file_name=f"{data.get('name', 'Resume').replace(' ', '_')}.json",
+                mime="application/json",
                 use_container_width=True
             )
-
+        
         st.markdown("---")
-        st.subheader("Live Preview")
+        
+        # Preview section
+        st.subheader("📱 Live Preview")
+        st.caption("This is exactly how your resume will look when downloaded")
+        
         with st.container(border=True):
-            st.components.v1.html(final_html, height=900, scrolling=True)
-
+            st.components.v1.html(final_html, height=800, scrolling=True)
+        
+        # Edit mode
+        with st.expander("✏️ Edit Generated Content (Optional)"):
+            st.warning("Make changes if needed - they'll reflect in the download")
+            
+            edited_data = data.copy()
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                edited_data['name'] = st.text_input("Name", data.get('name', ''))
+                edited_data['contact'] = st.text_input("Contact", data.get('contact', ''))
+            
+            with col2:
+                edited_data['summary'] = st.text_area("Summary", data.get('summary', ''), height=100)
+                edited_data['skills'] = st.text_area("Skills", data.get('skills', ''), height=80)
+            
+            if st.button("Update Preview"):
+                st.session_state.resume_data = edited_data
+                st.rerun()
+    
     else:
-        st.info("👈 Go to the **Enter Details** tab, paste your background, and generate your resume first.")
+        st.info("👈 Please enter your details and generate the resume in the first tab to see the preview here.")
+        
+        # Show placeholder
+        st.markdown("""
+        <div style="text-align: center; padding: 50px; background: #f8f9fa; border-radius: 10px;">
+            <h3>🚀 No Resume Generated Yet</h3>
+            <p>Go to the "Enter Details" tab and paste your experience to get started!</p>
+        </div>
+        """, unsafe_allow_html=True)
