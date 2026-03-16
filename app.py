@@ -2,21 +2,24 @@ import streamlit as st
 import os
 import json
 import io
-import time
 import pandas as pd
 from openai import OpenAI
 from docx import Document
 from docx.shared import Pt, Inches
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from xhtml2pdf import pisa
+from streamlit_gsheets import GSheetsConnection
 
+# ==========================================
+# 1. API Configuration (OpenRouter)
+# ==========================================
 try:
     api_key = st.secrets["OPENROUTER_API_KEY"]
-except:
+except (FileNotFoundError, KeyError):
     api_key = os.getenv("OPENROUTER_API_KEY")
 
 if not api_key:
-    st.error("API key missing")
+    st.error("⚠️ API key not found. Please set it in Streamlit Secrets or as an environment variable.")
     st.stop()
 
 client = OpenAI(
@@ -24,287 +27,420 @@ client = OpenAI(
     api_key=api_key,
 )
 
-st.set_page_config(page_title="Resumed | Live AI Resume Builder", layout="wide", page_icon="📄")
+# ==========================================
+# 2. Live Typing Effect Helper
+# ==========================================
+def live_typing_effect(text, element_id, speed=20):
+    """Simulates typing text in a live HTML element."""
+    js = f"""
+    <script>
+        const element = window.parent.document.getElementById("{element_id}");
+        let i = 0;
+        const txt = `{text}`;
+        const speed = {speed};
 
-st.title("📄 Resumed - Build your resume with AI")
+        function typeWriter() {{
+            if (i < txt.length) {{
+                element.innerHTML += txt.charAt(i);
+                i++;
+                setTimeout(typeWriter, speed);
+            }}
+        }}
+        typeWriter();
+    </script>
+    """
+    return js
 
-st.info("Watch your resume being created word-by-word in real time.")
-
-
-def render_template(data):
+# ==========================================
+# 3. Advanced HTML/PDF Resume Templates
+# ==========================================
+def render_faang_template(data, is_pdf=False):
+    pdf_styles = "@page { margin: 0.75in; }" if is_pdf else ""
+    wrapper_style = "" if is_pdf else "max-width: 800px; margin: 0 auto; padding: 40px; background: white; box-shadow: 0px 4px 12px rgba(0,0,0,0.1);"
 
     html = f"""
-<html>
-<head>
-<style>
-body {{font-family: Arial;padding:40px;}}
-h1 {{text-align:center;margin-bottom:5px;}}
-.contact {{text-align:center;margin-bottom:20px;}}
-.section-title {{border-bottom:1px solid black;margin-top:20px;font-weight:bold;}}
-</style>
-</head>
-<body>
-<h1>{data.get("name","")}</h1>
-<div class="contact">{data.get("contact","")}</div>
-"""
+    <html>
+    <head>
+    <style>
+        {pdf_styles}
+        body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #000; font-size: 12px; line-height: 1.4; }}
+        h1 {{ font-size: 28px; text-align: center; margin: 0 0 5px 0; }}
+        .contact {{ text-align: center; color: #333; font-size: 11px; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 10px; }}
+        .section-title {{ border-bottom: 1px solid #ccc; padding-bottom: 2px; margin-top: 15px; margin-bottom: 5px; text-transform: uppercase; font-size: 13px; font-weight: bold; }}
+        .item-table {{ width: 100%; margin-top: 8px; border-collapse: collapse; }}
+        .item-table td {{ padding: 0; vertical-align: bottom; }}
+        .desc {{ margin-top: 3px; font-size: 11px; }}
+    </style>
+    </head>
+    <body>
+    <div style="{wrapper_style}">
+        <h1>{data.get('name', 'Your Name')}</h1>
+        <div class="contact">{data.get('contact', 'Email | Phone | LinkedIn')}</div>
+    """
 
-    if data.get("summary"):
+    if data.get('summary'):
         html += f"""
-<div class="section-title">Professional Summary</div>
-<p>{data['summary']}</p>
-"""
+        <div class="section-title">Professional Summary</div>
+        <p style="margin-top: 0; font-size: 11px;">{data['summary']}</p>
+        """
 
-    if data.get("experience"):
-        html += """<div class="section-title">Experience</div>"""
-        for exp in data["experience"]:
+    if data.get('experience') and len(data['experience']) > 0:
+        html += '<div class="section-title">Experience</div>'
+        for exp in data['experience']:
             html += f"""
-<p><b>{exp.get('title','')}</b> - {exp.get('company','')}<br>{exp.get('duration','')}</p>
-<p>{exp.get('description','')}</p>
-"""
+            <table class="item-table">
+                <tr>
+                    <td align="left"><b>{exp.get('title', '')}</b> at {exp.get('company', '')}</td>
+                    <td align="right" style="color: #555;">{exp.get('duration', '')}</td>
+                </tr>
+            </table>
+            <div class="desc">{exp.get('description', '')}</div>
+            """
 
-    if data.get("projects"):
-        html += """<div class="section-title">Projects</div>"""
-        for proj in data["projects"]:
+    if data.get('projects') and len(data['projects']) > 0:
+        html += '<div class="section-title">Projects</div>'
+        for proj in data['projects']:
             html += f"""
-<p><b>{proj.get('name','')}</b> ({proj.get('tech_stack','')})</p>
-<p>{proj.get('description','')}</p>
-"""
+            <table class="item-table">
+                <tr>
+                    <td align="left"><b>{proj.get('name', '')}</b></td>
+                    <td align="right" style="color: #555;">{proj.get('tech_stack', '')}</td>
+                </tr>
+            </table>
+            <div class="desc">{proj.get('description', '')}</div>
+            """
 
-    if data.get("education"):
-        html += """<div class="section-title">Education</div>"""
-        for edu in data["education"]:
+    if data.get('education') and len(data['education']) > 0:
+        html += '<div class="section-title">Education</div>'
+        for edu in data['education']:
             html += f"""
-<p><b>{edu.get('university','')}</b><br>{edu.get('degree','')} ({edu.get('year','')})</p>
-"""
+            <table class="item-table">
+                <tr>
+                    <td align="left"><b>{edu.get('university', '')}</b><br>{edu.get('degree', '')}</td>
+                    <td align="right" style="color: #555;">{edu.get('year', '')}</td>
+                </tr>
+            </table>
+            """
 
-    if data.get("skills"):
+    if data.get('skills'):
         html += f"""
-<div class="section-title">Skills</div>
-<p>{data['skills']}</p>
-"""
+        <div class="section-title">Skills</div>
+        <p style="margin-top: 0; font-size: 11px;">{data['skills']}</p>
+        """
 
-    html += "</body></html>"
-
+    html += "</div></body></html>"
     return html
 
-
-def generate_resume_stream(raw_text, builder_box, preview_box):
-
-    prompt = """
-You are an expert resume writer.
-
-Extract resume info and return STRICT JSON:
-
-{
-"name":"",
-"contact":"",
-"summary":"",
-"experience":[{"title":"","company":"","duration":"","description":""}],
-"projects":[{"name":"","tech_stack":"","description":""}],
-"education":[{"degree":"","university":"","year":""}],
-"skills":""
-}
-"""
-
-    stream = client.chat.completions.create(
-        model="openai/gpt-4o-mini",
-        messages=[
-            {"role":"system","content":prompt},
-            {"role":"user","content":raw_text}
-        ],
-        stream=True
+def render_xyz_template(data, is_pdf=False):
+    html = render_faang_template(data, is_pdf).replace(
+        "font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;",
+        "font-family: 'Georgia', serif;"
+    ).replace(
+        "border-bottom: 2px solid #000;",
+        "border-bottom: 2px solid #2a75d3;"
+    ).replace(
+        "text-transform: uppercase;",
+        "color: #2a75d3; text-transform: uppercase;"
     )
+    return html
 
-    generated = ""
+# ==========================================
+# 4. AI Processing
+# ==========================================
+def extract_details_with_ai(raw_text):
+    prompt = """
+    You are an expert resume writer and career coach. Extract the information from the user's raw text and format it STRICTLY as a JSON object.
 
-    for chunk in stream:
+    CRITICAL INSTRUCTIONS:
+    1. Only include sections the user provides data for. If there is no mention of education, leave the education array EMPTY. Do not make up companies or universities.
+    2. If the user provides incomplete details for an actual job, auto-generate a professional, realistic description based on standard industry practices for that role.
+    3. Infer relevant skills if implied by the experience.
+    4. Ensure all descriptions are highly professional and action-oriented.
+    5. Do not include markdown formatting like ```json in the output, just return the raw JSON.
 
-        if chunk.choices[0].delta.content:
+    Required JSON Schema:
+    {
+        "name": "Full Name",
+        "contact": "Email | Phone | Location / Links",
+        "summary": "A strong 2-3 sentence professional summary.",
+        "experience": [
+            {
+                "title": "Job Title",
+                "company": "Company Name",
+                "duration": "Start Date - End Date",
+                "description": "A detailed paragraph or bullet points summarizing key achievements."
+            }
+        ],
+        "projects": [
+            {
+                "name": "Project Name",
+                "tech_stack": "Technologies used",
+                "description": "Detailed description of the project, problem solved, and impact."
+            }
+        ],
+        "education": [
+            {
+                "degree": "Degree Name",
+                "university": "University Name",
+                "year": "Graduation Year"
+            }
+        ],
+        "skills": "Comma-separated list of technical and soft skills"
+    }
+    """
+    try:
+        response = client.chat.completions.create(
+            model="openai/gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": raw_text}
+            ],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        st.error(f"Error communicating with OpenRouter API: {e}")
+        return None
 
-            token = chunk.choices[0].delta.content
-            generated += token
-
-            builder_box.markdown(f"""
-### 🤖 AI Writing Resume
-
-```json
-{generated}
-```
-""")
-
-            try:
-                data = json.loads(generated)
-                html = render_template(data)
-
-                preview_box.components.v1.html(
-                    html,
-                    height=700,
-                    scrolling=True
-                )
-            except:
-                pass
-
-            time.sleep(0.01)
-
-    return json.loads(generated)
-
-
+# ==========================================
+# 5. Advanced File Export Generators
+# ==========================================
 def generate_docx(data):
-
     doc = Document()
-
-    for section in doc.sections:
+    sections = doc.sections
+    for section in sections:
         section.top_margin = Inches(0.75)
         section.bottom_margin = Inches(0.75)
         section.left_margin = Inches(0.75)
         section.right_margin = Inches(0.75)
 
-    name = doc.add_heading(data.get("name",""),0)
-    name.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    def add_section_header(text):
+        p = doc.add_paragraph()
+        run = p.add_run(text.upper())
+        run.bold = True
+        run.font.size = Pt(11)
+        p.paragraph_format.space_before = Pt(14)
+        p.paragraph_format.space_after = Pt(4)
 
-    p = doc.add_paragraph(data.get("contact",""))
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    def add_split_header(left_bold, left_regular, right_text):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.tab_stops.add_tab_stop(Inches(7.0), WD_TAB_ALIGNMENT.RIGHT)
 
-    if data.get("summary"):
-        doc.add_heading("Summary",level=1)
-        doc.add_paragraph(data["summary"])
+        run_bold = p.add_run(left_bold)
+        run_bold.bold = True
+        if left_regular:
+            p.add_run(f" {left_regular}")
+        if right_text:
+            p.add_run(f"\t{right_text}")
 
-    if data.get("experience"):
-        doc.add_heading("Experience",level=1)
-        for exp in data["experience"]:
-            doc.add_paragraph(f"{exp['title']} - {exp['company']} ({exp['duration']})")
-            doc.add_paragraph(exp["description"])
+    name_p = doc.add_paragraph()
+    name_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    name_run = name_p.add_run(data.get('name', 'Your Name'))
+    name_run.bold = True
+    name_run.font.size = Pt(22)
+    name_p.paragraph_format.space_after = Pt(2)
 
-    if data.get("projects"):
-        doc.add_heading("Projects",level=1)
-        for proj in data["projects"]:
-            doc.add_paragraph(f"{proj['name']} ({proj['tech_stack']})")
-            doc.add_paragraph(proj["description"])
+    contact_p = doc.add_paragraph()
+    contact_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    contact_run = contact_p.add_run(data.get('contact', ''))
+    contact_run.font.size = Pt(10)
+    contact_p.paragraph_format.space_after = Pt(10)
 
-    if data.get("education"):
-        doc.add_heading("Education",level=1)
-        for edu in data["education"]:
-            doc.add_paragraph(f"{edu['degree']} - {edu['university']} ({edu['year']})")
+    if data.get('summary'):
+        add_section_header('Professional Summary')
+        p = doc.add_paragraph(data.get('summary', ''))
+        p.paragraph_format.space_after = Pt(6)
 
-    if data.get("skills"):
-        doc.add_heading("Skills",level=1)
-        doc.add_paragraph(data["skills"])
+    if data.get('experience') and len(data['experience']) > 0:
+        add_section_header('Experience')
+        for exp in data['experience']:
+            add_split_header(exp.get('title', ''), f"at {exp.get('company', '')}", exp.get('duration', ''))
+            p = doc.add_paragraph(exp.get('description', ''))
+            p.paragraph_format.space_after = Pt(8)
+
+    if data.get('projects') and len(data['projects']) > 0:
+        add_section_header('Projects')
+        for proj in data['projects']:
+            add_split_header(proj.get('name', ''), "", proj.get('tech_stack', ''))
+            p = doc.add_paragraph(proj.get('description', ''))
+            p.paragraph_format.space_after = Pt(8)
+
+    if data.get('education') and len(data['education']) > 0:
+        add_section_header('Education')
+        for edu in data['education']:
+            add_split_header(edu.get('university', ''), "", edu.get('year', ''))
+            p = doc.add_paragraph(edu.get('degree', ''))
+            p.paragraph_format.space_after = Pt(6)
+
+    if data.get('skills'):
+        add_section_header('Skills')
+        p = doc.add_paragraph(data.get('skills', ''))
 
     bio = io.BytesIO()
     doc.save(bio)
-
     return bio.getvalue()
 
-
-def generate_pdf(html):
-
+def generate_pdf(html_content):
     result = io.BytesIO()
-
-    pdf = pisa.pisaDocument(
-        io.BytesIO(html.encode("UTF-8")),
-        result
-    )
-
+    pdf = pisa.pisaDocument(io.BytesIO(html_content.encode("UTF-8")), result)
     if not pdf.err:
         return result.getvalue()
-
     return None
 
+# ==========================================
+# 6. Database Logging (Google Sheets)
+# ==========================================
+def save_name_to_sheets(name):
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df = conn.read(usecols=[0], ttl=0)
+        new_row = pd.DataFrame({"Name": [name]})
+        updated_df = pd.concat([df, new_row], ignore_index=True)
+        conn.update(data=updated_df)
+    except Exception as e:
+        pass
+
+# ==========================================
+# 7. Streamlit UI Elements
+# ==========================================
+st.set_page_config(page_title="Resumed | AI Builder", layout="wide", page_icon="📄")
+st.title("📄 Resumed - Build your resume with AI")
+st.info("🚀 *Live interactive resume builder. Watch your resume being built in real-time!*")
+
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    template_choice = st.selectbox("Select Template Format:", ["FAANG Template", "XYZ Format"])
+    st.markdown("---")
+    st.markdown("### How it works")
+    st.markdown("1. Dump your raw experience into the text box.\n2. AI organizes, expands, and formats it.\n3. Watch your resume being built live!")
 
 if "resume_data" not in st.session_state:
     st.session_state.resume_data = None
 
-
-tab1, tab2 = st.tabs(["📝 Input", "📄 Resume"])
+tab1, tab2 = st.tabs(["📝 1. Enter Your Details", "👁️ 2. Live Preview & Export"])
 
 with tab1:
+    st.markdown("### Drop your raw background here")
+    st.caption("💡 **Pro Tip:** Include your basic info, jobs, projects, and education. The AI will write professional bullet points and infer missing skills automatically!")
 
-    st.subheader("Paste your raw information")
+    raw_text = st.text_area("Experience & Projects:", height=250, placeholder="e.g., My name is John Doe. I worked at Google as a backend dev from 2021-2023. Built a scalable API... ")
 
-    raw_text = st.text_area(
-        "Your background",
-        height=250,
-        placeholder="My name is John Doe. Data scientist at XYZ. Built ML systems."
-    )
-
-    if st.button("✨ Generate Resume", use_container_width=True):
-
+    if st.button("✨ Generate & Enhance Resume", use_container_width=True):
         if raw_text.strip():
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                builder_box = st.empty()
-
-            with col2:
-                preview_box = st.empty()
-
-            progress = st.progress(0)
-
-            st.markdown("### 🧠 AI Thinking")
-
-            st.write("🔍 Extracting details...")
-            progress.progress(25)
-            time.sleep(1)
-
-            st.write("🧠 Writing professional summary...")
-            progress.progress(50)
-            time.sleep(1)
-
-            st.write("📊 Expanding experience...")
-            progress.progress(70)
-            time.sleep(1)
-
-            data = generate_resume_stream(raw_text, builder_box, preview_box)
-
-            st.session_state.resume_data = data
-
-            progress.progress(100)
-
-            st.success("Resume generated!")
-
+            with st.spinner("Analyzing data and generating professional descriptions..."):
+                result = extract_details_with_ai(raw_text)
+                if result:
+                    st.session_state.resume_data = result
+                    if result.get("name"):
+                        save_name_to_sheets(result["name"])
+                    st.success("Resume generated successfully! Go to the 'Live Preview & Export' tab to watch it being built.")
         else:
-            st.warning("Please enter details.")
-
+            st.warning("Please paste some text before generating.")
 
 with tab2:
-
     if st.session_state.resume_data:
-
         data = st.session_state.resume_data
+        st.subheader("🎯 Live Resume Builder")
 
-        html = render_template(data)
+        live_resume_placeholder = st.empty()
 
-        st.components.v1.html(
-            html,
-            height=800,
-            scrolling=True
-        )
+        with live_resume_placeholder.container():
+            st.markdown("### Building Your Resume...")
 
+            # Name
+            name_html = f"<h1 id='name' style='text-align: center;'></h1>"
+            st.components.v1.html(name_html, height=50)
+            st.components.v1.html(live_typing_effect(data.get("name", ""), "name"))
+
+            # Contact
+            contact_html = f"<p id='contact' style='text-align: center; font-size: 12px;'></p>"
+            st.components.v1.html(contact_html, height=30)
+            st.components.v1.html(live_typing_effect(data.get("contact", ""), "contact"))
+
+            # Summary
+            if data.get("summary"):
+                st.markdown("#### Adding Professional Summary...")
+                summary_html = f"<p id='summary' style='font-size: 11px;'></p>"
+                st.components.v1.html(summary_html, height=50)
+                st.components.v1.html(live_typing_effect(data["summary"], "summary"))
+
+            # Experience
+            if data.get("experience"):
+                st.markdown("#### Adding Work Experience...")
+                for exp in data["experience"]:
+                    exp_html = f"""
+                    <div style="margin-bottom: 10px;">
+                        <h4 id='exp_title_{exp.get("title", "")}' style="margin: 0;"></h4>
+                        <p id='exp_company_{exp.get("title", "")}' style="margin: 0; font-size: 10px; color: #555;"></p>
+                        <p id='exp_desc_{exp.get("title", "")}' style="margin: 5px 0 0 0; font-size: 11px;"></p>
+                    </div>
+                    """
+                    st.components.v1.html(exp_html, height=80)
+                    st.components.v1.html(live_typing_effect(exp.get("title", ""), f"exp_title_{exp.get('title', '')}"))
+                    st.components.v1.html(live_typing_effect(f"at {exp.get('company', '')}", f"exp_company_{exp.get('title', '')}"))
+                    st.components.v1.html(live_typing_effect(exp.get("description", ""), f"exp_desc_{exp.get('title', '')}"))
+
+            # Projects
+            if data.get("projects"):
+                st.markdown("#### Adding Projects...")
+                for proj in data["projects"]:
+                    proj_html = f"""
+                    <div style="margin-bottom: 10px;">
+                        <h4 id='proj_name_{proj.get("name", "")}' style="margin: 0;"></h4>
+                        <p id='proj_tech_{proj.get("name", "")}' style="margin: 0; font-size: 10px; color: #555;"></p>
+                        <p id='proj_desc_{proj.get("name", "")}' style="margin: 5px 0 0 0; font-size: 11px;"></p>
+                    </div>
+                    """
+                    st.components.v1.html(proj_html, height=80)
+                    st.components.v1.html(live_typing_effect(proj.get("name", ""), f"proj_name_{proj.get('name', '')}"))
+                    st.components.v1.html(live_typing_effect(proj.get("tech_stack", ""), f"proj_tech_{proj.get('name', '')}"))
+                    st.components.v1.html(live_typing_effect(proj.get("description", ""), f"proj_desc_{proj.get('name', '')}"))
+
+            # Education
+            if data.get("education"):
+                st.markdown("#### Adding Education...")
+                for edu in data["education"]:
+                    edu_html = f"""
+                    <div style="margin-bottom: 10px;">
+                        <h4 id='edu_univ_{edu.get("university", "")}' style="margin: 0;"></h4>
+                        <p id='edu_degree_{edu.get("university", "")}' style="margin: 0; font-size: 10px;"></p>
+                        <p id='edu_year_{edu.get("university", "")}' style="margin: 5px 0 0 0; font-size: 11px; color: #555;"></p>
+                    </div>
+                    """
+                    st.components.v1.html(edu_html, height=60)
+                    st.components.v1.html(live_typing_effect(edu.get("university", ""), f"edu_univ_{edu.get('university', '')}"))
+                    st.components.v1.html(live_typing_effect(edu.get("degree", ""), f"edu_degree_{edu.get('university', '')}"))
+                    st.components.v1.html(live_typing_effect(edu.get("year", ""), f"edu_year_{edu.get('university', '')}"))
+
+            # Skills
+            if data.get("skills"):
+                st.markdown("#### Adding Skills...")
+                skills_html = f"<p id='skills' style='font-size: 11px;'></p>"
+                st.components.v1.html(skills_html, height=40)
+                st.components.v1.html(live_typing_effect(data["skills"], "skills"))
+
+        st.markdown("---")
+
+        # Download buttons
         col1, col2 = st.columns(2)
-
         with col1:
-
-            docx = generate_docx(data)
-
+            docx_file = generate_docx(data)
             st.download_button(
-                "Download DOCX",
-                docx,
-                file_name="resume.docx"
+                label="📄 Download Word (.docx)",
+                data=docx_file,
+                file_name=f"{data.get('name', 'Resume').replace(' ', '_')}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
             )
-
         with col2:
-
-            pdf = generate_pdf(html)
-
-            if pdf:
-
-                st.download_button(
-                    "Download PDF",
-                    pdf,
-                    file_name="resume.pdf"
-                )
-
+            pdf_file = generate_pdf(render_faang_template(data, is_pdf=True))
+            st.download_button(
+                label="📥 Download PDF (.pdf)",
+                data=pdf_file,
+                file_name=f"{data.get('name', 'Resume').replace(' ', '_')}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
     else:
-
-        st.info("Generate resume first.")
+        st.info("👈 Generate your resume in the first tab to see the live preview here.")
