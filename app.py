@@ -35,7 +35,6 @@ def render_faang_template(data, is_pdf=False):
     Uses HTML tables for perfectly reliable alignment in xhtml2pdf exports.
     Conditionally renders sections only if data exists.
     """
-    # Base CSS. For PDF, we set physical page margins.
     pdf_styles = "@page { margin: 0.75in; }" if is_pdf else ""
     wrapper_style = "" if is_pdf else "max-width: 800px; margin: 0 auto; padding: 40px; background: white; box-shadow: 0px 4px 12px rgba(0,0,0,0.1);"
 
@@ -59,14 +58,12 @@ def render_faang_template(data, is_pdf=False):
         <div class="contact">{data.get('contact', 'Email | Phone | LinkedIn')}</div>
     """
 
-    # --- DYNAMIC: Summary ---
     if data.get('summary'):
         html += f"""
         <div class="section-title">Professional Summary</div>
         <p style="margin-top: 0; font-size: 11px;">{data['summary']}</p>
         """
 
-    # --- DYNAMIC: Experience ---
     if data.get('experience') and len(data['experience']) > 0:
         html += '<div class="section-title">Experience</div>'
         for exp in data['experience']:
@@ -80,7 +77,6 @@ def render_faang_template(data, is_pdf=False):
             <div class="desc">{exp.get('description', '')}</div>
             """
 
-    # --- DYNAMIC: Projects ---
     if data.get('projects') and len(data['projects']) > 0:
         html += '<div class="section-title">Projects</div>'
         for proj in data['projects']:
@@ -94,7 +90,6 @@ def render_faang_template(data, is_pdf=False):
             <div class="desc">{proj.get('description', '')}</div>
             """
 
-    # --- DYNAMIC: Education ---
     if data.get('education') and len(data['education']) > 0:
         html += '<div class="section-title">Education</div>'
         for edu in data['education']:
@@ -107,7 +102,6 @@ def render_faang_template(data, is_pdf=False):
             </table>
             """
 
-    # --- DYNAMIC: Skills ---
     if data.get('skills'):
         html += f"""
         <div class="section-title">Skills</div>
@@ -131,9 +125,9 @@ def render_xyz_template(data, is_pdf=False):
     return html
 
 # ==========================================
-# 3. AI Processing
+# 3. AI Processing (Updated for Streaming)
 # ==========================================
-def extract_details_with_ai(raw_text):
+def extract_details_with_ai(raw_text, placeholder):
     prompt = """
     You are an expert resume writer and career coach. Extract the information from the user's raw text and format it STRICTLY as a JSON object. 
     
@@ -142,7 +136,7 @@ def extract_details_with_ai(raw_text):
     2. If the user provides incomplete details for an actual job, auto-generate a professional, realistic description based on standard industry practices for that role.
     3. Infer relevant skills if implied by the experience.
     4. Ensure all descriptions are highly professional and action-oriented.
-    5. Do not include markdown formatting like ```json in the output, just return the raw JSON.
+    5. Return ONLY valid JSON.
     
     Required JSON Schema:
     {
@@ -181,9 +175,23 @@ def extract_details_with_ai(raw_text):
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": raw_text}
             ],
-            response_format={"type": "json_object"}
+            stream=True # Enables live streaming
         )
-        return json.loads(response.choices[0].message.content)
+        
+        full_response = ""
+        for chunk in response:
+            if chunk.choices[0].delta.content is not None:
+                full_response += chunk.choices[0].delta.content
+                # Update the UI placeholder with the growing JSON string
+                placeholder.markdown(f"```json\n{full_response}\n```")
+        
+        # Clean up Markdown codeblocks if the LLM adds them
+        cleaned_response = full_response.replace("```json", "").replace("```", "").strip()
+        return json.loads(cleaned_response)
+        
+    except json.JSONDecodeError:
+        st.error("⚠️ The AI did not return a perfectly valid JSON. Please try again.")
+        return None
     except Exception as e:
         st.error(f"Error communicating with OpenRouter API: {e}")
         return None
@@ -192,10 +200,7 @@ def extract_details_with_ai(raw_text):
 # 4. Advanced File Export Generators 
 # ==========================================
 def generate_docx(data):
-    """Generates a highly formatted MS Word document with custom margins and tab stops."""
     doc = Document()
-    
-    # Set narrow margins (0.75 inches)
     sections = doc.sections
     for section in sections:
         section.top_margin = Inches(0.75)
@@ -203,7 +208,6 @@ def generate_docx(data):
         section.left_margin = Inches(0.75)
         section.right_margin = Inches(0.75)
 
-    # Helper function for section headers
     def add_section_header(text):
         p = doc.add_paragraph()
         run = p.add_run(text.upper())
@@ -212,11 +216,9 @@ def generate_docx(data):
         p.paragraph_format.space_before = Pt(14)
         p.paragraph_format.space_after = Pt(4)
 
-    # Helper function for left/right aligned headers (Job Title + Date)
     def add_split_header(left_bold, left_regular, right_text):
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(2)
-        # Add a right-aligned tab stop at 7 inches (Standard page width - margins)
         p.paragraph_format.tab_stops.add_tab_stop(Inches(7.0), WD_TAB_ALIGNMENT.RIGHT)
         
         run_bold = p.add_run(left_bold)
@@ -224,10 +226,8 @@ def generate_docx(data):
         if left_regular:
             p.add_run(f" {left_regular}")
         if right_text:
-            p.add_run(f"\t{right_text}") # The \t pushes it to the right tab stop
+            p.add_run(f"\t{right_text}") 
 
-    # Build Document
-    # Name
     name_p = doc.add_paragraph()
     name_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     name_run = name_p.add_run(data.get('name', 'Your Name'))
@@ -235,14 +235,12 @@ def generate_docx(data):
     name_run.font.size = Pt(22)
     name_p.paragraph_format.space_after = Pt(2)
 
-    # Contact
     contact_p = doc.add_paragraph()
     contact_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     contact_run = contact_p.add_run(data.get('contact', ''))
     contact_run.font.size = Pt(10)
     contact_p.paragraph_format.space_after = Pt(10)
 
-    # Dynamic Sections
     if data.get('summary'):
         add_section_header('Professional Summary')
         p = doc.add_paragraph(data.get('summary', ''))
@@ -278,7 +276,6 @@ def generate_docx(data):
     return bio.getvalue()
 
 def generate_pdf(html_content):
-    """Converts the perfectly structured HTML table layout into a PDF."""
     result = io.BytesIO()
     pdf = pisa.pisaDocument(io.BytesIO(html_content.encode("UTF-8")), result)
     if not pdf.err:
@@ -304,7 +301,7 @@ def save_name_to_sheets(name):
 st.set_page_config(page_title="Resumed | AI Builder", layout="wide", page_icon="📄")
 
 st.title("📄 Resumed - Build your resume with AI")
-st.info("🚀 *This is base version, in next update : live interection with AI step by step*")
+st.info("🚀 *Live AI construction active!*")
 
 with st.sidebar:
     st.header("⚙️ Configuration")
@@ -326,15 +323,21 @@ with tab1:
 
     if st.button("✨ Generate & Enhance Resume", use_container_width=True):
         if raw_text.strip():
-            with st.spinner("Analyzing data and generating professional descriptions..."):
-                result = extract_details_with_ai(raw_text)
-                if result:
-                    st.session_state.resume_data = result
-                    
-                    if result.get("name"):
-                        save_name_to_sheets(result["name"])
-                        
-                    st.success("Resume generated successfully! Go to the 'Preview & Export' tab to view it.")
+            st.markdown("### 🤖 AI is drafting your resume...")
+            # Create an empty placeholder for the live text
+            live_placeholder = st.empty() 
+            
+            # Pass the placeholder into the updated streaming function
+            result = extract_details_with_ai(raw_text, live_placeholder)
+            
+            if result:
+                st.session_state.resume_data = result
+                
+                if result.get("name"):
+                    save_name_to_sheets(result["name"])
+                
+                # Overwrite the raw JSON view with a success message once done
+                live_placeholder.success("✅ Resume generated successfully! Go to the 'Preview & Export' tab to view and download your files.")
         else:
             st.warning("Please paste some text before generating.")
 
@@ -344,7 +347,6 @@ with tab2:
         
         col1, col2, col3 = st.columns([1, 1, 2])
         
-        # We generate two versions of the HTML: one styled for the web preview, one optimized for the PDF engine.
         if template_choice == "FAANG Template":
             preview_html = render_faang_template(data, is_pdf=False)
             pdf_html = render_faang_template(data, is_pdf=True)
@@ -362,7 +364,6 @@ with tab2:
                 use_container_width=True
             )
         with col2:
-            # We feed the specialized pdf_html to the converter
             pdf_file = generate_pdf(pdf_html)
             if pdf_file:
                 st.download_button(
@@ -378,7 +379,6 @@ with tab2:
         st.markdown("---")
         
         st.subheader("Live Preview")
-        # We display the web-optimized HTML here
         st.components.v1.html(preview_html, height=800, scrolling=True)
             
     else:
