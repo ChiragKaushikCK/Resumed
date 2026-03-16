@@ -5,3 +5,4 @@ xhtml2pdf
 st-gsheets-connection
 pandas
 reportlab
+json-repair
